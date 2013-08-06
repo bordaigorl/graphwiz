@@ -20,9 +20,9 @@
 
 '''Visualize dot graphs via the xdot format.'''
 
-__author__ = "Jose Fonseca"
+__author__ = "Jose Fonseca and Emanuele D'Osualdo"
 
-__version__ = "0.4"
+__version__ = "0.5"
 
 
 import os
@@ -41,6 +41,19 @@ import gtk.keysyms
 import cairo
 import pango
 import pangocairo
+
+import pyinotify
+import urlparse # for parsing URI in drag and drop
+
+watch_mask = pyinotify.IN_CLOSE_WRITE  # watched events
+
+class EventHandler(pyinotify.ProcessEvent):
+    win = None
+    def __init__(self, win):
+        self.win = win
+
+    def process_IN_CLOSE_WRITE(self, event):
+        self.win.widget.update()
 
 
 # See http://www.graphviz.org/pub/scm/graphviz-cairo/plugin/cairo/gvrender_cairo.c
@@ -402,7 +415,7 @@ class Element(CompoundShape):
 
 class Node(Element):
 
-    def __init__(self, x, y, w, h, shapes, url, txt=""):
+    def __init__(self, x, y, w, h, shapes, url, id, txt=""):
         Element.__init__(self, shapes)
 
         self.x = x
@@ -415,6 +428,7 @@ class Node(Element):
 
         self.url = url
         self.txt = txt
+        self.id = id
 
     def is_inside(self, x, y):
         return self.x1 <= x and x <= self.x2 and self.y1 <= y and y <= self.y2
@@ -422,9 +436,13 @@ class Node(Element):
     def get_url(self, x, y):
         if self.url is None:
             return None
-        #print (x, y), (self.x1, self.y1), "-", (self.x2, self.y2)
         if self.is_inside(x, y):
             return Url(self, self.url)
+        return None
+
+    def get_node_id(self, x, y):
+        if self.is_inside(x, y):
+            return self.id
         return None
 
     def get_jump(self, x, y):
@@ -492,6 +510,13 @@ class Graph(Shape):
             url = node.get_url(x, y)
             if url is not None:
                 return url
+        return None
+
+    def get_node_id(self, x, y):
+        for node in self.nodes:
+            id = node.get_node_id(x, y)
+            if id is not None:
+                return id
         return None
 
     def get_jump(self, x, y):
@@ -1182,10 +1207,11 @@ class XDotParser(DotParser):
                 parser = XDotAttrParser(self, attrs[attr])
                 shapes.extend(parser.parse())
         # url = attrs.get('URL', None)
-        url = attrs.get('CFA', None)
-        # BORDAIGORL: additional field to store label
+        url = attrs.get('contents', None)
+        # BORDAIGORL: additional fields to store label
         txt = attrs.get('label', id)
-        node = Node(x, y, w, h, shapes, url,txt)
+        ttip = attrs.get('tooltip', id) or ("ID: "+id)
+        node = Node(x, y, w, h, shapes, url, ttip, txt)
         #node.txt = txt
         self.node_by_name[id] = node
         if shapes:
@@ -1379,6 +1405,8 @@ class NullAction(DragAction):
             x, y, state = event.x, event.y, event.state
         dot_widget = self.dot_widget
         item = dot_widget.get_url(x, y)
+        nodeid = dot_widget.get_node_id(x,y)
+        dot_widget.set_tooltip_text(nodeid)
         if item is None:
             item = dot_widget.get_jump(x, y)
         if item is not None:
@@ -1476,7 +1504,8 @@ class DotWidget(gtk.DrawingArea):
         self.connect('key-press-event', self.on_key_press_event)
         self.last_mtime = None
 
-        gobject.timeout_add(5000, self.update)
+        #BORDAIGORL
+        #gobject.timeout_add(5000, self.update)
 
         self.x, self.y = 0.0, 0.0
         self.zoom_ratio = 1.0
@@ -1508,7 +1537,7 @@ class DotWidget(gtk.DrawingArea):
             dialog = gtk.MessageDialog(type=gtk.MESSAGE_ERROR,
                                        message_format=error,
                                        buttons=gtk.BUTTONS_OK)
-            dialog.set_title('Dot Viewer')
+            dialog.set_title('GraphWiz')
             dialog.run()
             dialog.destroy()
             return None
@@ -1527,7 +1556,7 @@ class DotWidget(gtk.DrawingArea):
             dialog = gtk.MessageDialog(type=gtk.MESSAGE_ERROR,
                                        message_format=str(ex),
                                        buttons=gtk.BUTTONS_OK)
-            dialog.set_title('Dot Viewer')
+            dialog.set_title('GraphWiz')
             dialog.run()
             dialog.destroy()
             return False
@@ -1555,7 +1584,7 @@ class DotWidget(gtk.DrawingArea):
                 dlg = gtk.MessageDialog(type=gtk.MESSAGE_ERROR,
                                         message_format=str(ex),
                                         buttons=gtk.BUTTONS_OK)
-                dlg.set_title('Dot Viewer')
+                dlg.set_title('GraphWiz')
                 dlg.run()
                 dlg.destroy()
 
@@ -1797,6 +1826,8 @@ class DotWidget(gtk.DrawingArea):
             if url!=None:
                 txt = unicode(url.url).replace("\\n","\n")
                 self.side_info.set_text(txt)
+            else:
+                self.side_info.set_text("")
 
             jump = self.get_jump(x, y)
             if jump is not None:
@@ -1858,6 +1889,10 @@ class DotWidget(gtk.DrawingArea):
         x, y = self.window2graph(x, y)
         return self.graph.get_url(x, y)
 
+    def get_node_id(self, x, y):
+        x, y = self.window2graph(x, y)
+        return self.graph.get_node_id(x, y)
+
     def get_jump(self, x, y):
         x, y = self.window2graph(x, y)
         return self.graph.get_jump(x, y)
@@ -1879,7 +1914,10 @@ class DotWindow(gtk.Window):
     </ui>
     '''
 
-    base_title = 'ACS Viewer'
+    base_title = 'GraphWiz'
+    wm = None
+    watcher = {}
+    last_open_dir = None
 
     def __init__(self):
         gtk.Window.__init__(self)
@@ -1890,6 +1928,28 @@ class DotWindow(gtk.Window):
 
         window.set_title(self.base_title)
         window.set_default_size(512, 512)
+        def motion_cb(wid, context, x, y, time):
+            context.drag_status(gtk.gdk.ACTION_COPY, time)
+            # Returning True which means "I accept this data".
+            return True
+
+        def drop_cb(wid, context, x, y, time):
+            # Some data was dropped, get the data
+            wid.drag_get_data(context, context.targets[-1], time)
+            return True
+
+        def got_data_cb(wid, context, x, y, data, info, time):
+            u = data.get_text().strip('\n')
+            p = urlparse.urlparse(u).path
+            if os.path.exists(p):
+                wid.open_file(p)
+            context.finish(True, False, time)
+        window.drag_dest_set(0, [], 0)
+        window.connect('drag_motion', motion_cb)
+        window.connect('drag_drop', drop_cb)
+        window.connect('drag_data_received', got_data_cb)
+        window.connect('destroy', lambda window: gtk.main_quit())
+
         vbox = gtk.VBox()
         window.add(vbox)
 
@@ -1932,7 +1992,7 @@ class DotWindow(gtk.Window):
         self.search.connect("changed", self.do_search)
         item.add(self.search)
         toolbar.insert(gtk.SeparatorToolItem(),-1)
-        hide_side=gtk.ToggleToolButton(gtk.STOCK_PROPERTIES)
+        hide_side=gtk.ToggleToolButton(gtk.STOCK_INDEX)
         hide_side.set_label("Side Pane")
         #hide_side.set_active(True)
         toolbar.insert(hide_side,-1)
@@ -1950,6 +2010,7 @@ class DotWindow(gtk.Window):
         sw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
         info = gtk.TextView()
         info.set_editable(False)
+        info.set_wrap_mode(gtk.WRAP_WORD)
         self.widget.side_info = info.get_buffer()
         sw.add(info)
         #sw.set_size_request(200, -1)
@@ -2017,8 +2078,12 @@ class DotWindow(gtk.Window):
         try:
             fp = file(filename, 'rt')
             os.chdir(os.path.dirname(filename) or '.')
+            if self.wm:
+                self.wm.rm_watch(self.watcher.values())
             self.set_dotcode(fp.read(), filename)
             fp.close()
+            if self.wm:
+                self.watcher = self.wm.add_watch(filename, watch_mask)
         except IOError, ex:
             dlg = gtk.MessageDialog(type=gtk.MESSAGE_ERROR,
                                     message_format=str(ex),
@@ -2035,7 +2100,7 @@ class DotWindow(gtk.Window):
                                                  gtk.RESPONSE_CANCEL,
                                                  gtk.STOCK_OPEN,
                                                  gtk.RESPONSE_OK))
-        chooser.set_current_folder(os.getcwd())
+        chooser.set_current_folder(self.last_open_dir or os.getcwd())
         chooser.set_default_response(gtk.RESPONSE_OK)
         filter = gtk.FileFilter()
         filter.set_name("Graphviz dot files")
@@ -2047,6 +2112,7 @@ class DotWindow(gtk.Window):
         chooser.add_filter(filter)
         if chooser.run() == gtk.RESPONSE_OK:
             filename = chooser.get_filename()
+            self.last_open_dir = chooser.get_current_folder()
             chooser.destroy()
             self.open_file(filename)
         else:
@@ -2079,6 +2145,10 @@ def main():
     win = DotWindow()
     win.connect('destroy', gtk.main_quit)
     win.set_filter(options.filter)
+
+    win.wm = pyinotify.WatchManager()
+    watch_handler = EventHandler(win)
+    notifier = pyinotify.Notifier(win.wm, watch_handler,timeout=10)
     if len(args) == 0:
         if not sys.stdin.isatty():
             #win.set_dotcode(sys.stdin.read())
@@ -2088,6 +2158,15 @@ def main():
             win.set_dotcode(sys.stdin.read())
         else:
             win.open_file(args[0])
+    def quick_check():
+      assert notifier._timeout is not None, 'Notifier must be constructed with a short timeout'
+      notifier.process_events()
+      while notifier.check_events():  #loop in case more events appear while we are processing
+            notifier.read_events()
+            notifier.process_events()
+      return True
+    gobject.timeout_add(500, quick_check)
+
     gtk.main()
 
 
