@@ -1,4 +1,6 @@
-graphwiz
-========
+GraphWiz Dot Viewer
+===================
 
-A GTK viewer for GraphViz files. An unofficial fork (and eventually a rewrite) of xdot.py
+A GTK based viewer for GraphViz files.
+Adapted from [`xdot.py`](https://github.com/jrfonseca/xdot.py) by Jose Fonseca.
+
