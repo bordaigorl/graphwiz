@@ -15,6 +15,8 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
+# Modified by Emanuele D'Osualdo 2012
+#
 
 '''Visualize dot graphs via the xdot format.'''
 
@@ -30,6 +32,7 @@ import math
 import colorsys
 import time
 import re
+import string
 
 import gobject
 import gtk
@@ -56,7 +59,7 @@ class Pen:
         self.fillcolor = (0.0, 0.0, 0.0, 1.0)
         self.linewidth = 1.0
         self.fontsize = 14.0
-        self.fontname = "Times-Roman"
+        self.fontname = "Verdana"
         self.dash = ()
 
     def copy(self):
@@ -67,16 +70,37 @@ class Pen:
 
     def highlighted(self):
         pen = self.copy()
-        pen.color = (1, 0, 0, 1)
-        pen.fillcolor = (1, .8, .8, 1)
+        pen.color = (.1, .4, .6, 1)
+        pen.fillcolor = (.7, .9, 1, 1)
         return pen
 
+    def matched(self):
+        # BORDAIGORL: pen to be used when matched
+        pen = self.copy()
+        pen.color = (1, 0, 0, 1)
+        pen.fillcolor = (1, .8, .8, 1)
+        pen.linewidth = 3.0
+        return pen
+
+    def ghostly(self):
+        # BORDAIGORL: pen to be used when matched
+        pen = self.copy()
+        pen.color = (.5, .5, .5, 1)
+        #pen.fillcolor = (1, 1, 1, 1)
+        return pen
 
 class Shape:
     """Abstract base class for all the drawing shapes."""
 
+    HL_MATCH, HL_NOMATCH, HL_NONE = 1,2,3
+
     def __init__(self):
+        # BORDAIGORL: prepare for search function...
+        self.search_matched = self.HL_NONE
         pass
+
+    def set_matched(self,m):
+        self.search_matched = m
 
     def draw(self, cr, highlight=False):
         """Draw this shape with the given cairo context"""
@@ -87,6 +111,14 @@ class Shape:
             if not hasattr(self, 'highlight_pen'):
                 self.highlight_pen = self.pen.highlighted()
             return self.highlight_pen
+        elif self.search_matched==self.HL_MATCH:
+            if not hasattr(self, 'match_pen'):
+                self.match_pen = self.pen.matched()
+            return self.match_pen
+        elif self.search_matched==self.HL_NOMATCH:
+            if not hasattr(self, 'ghost_pen'):
+                self.ghost_pen = self.pen.ghostly()
+            return self.ghost_pen
         else:
             return self.pen
 
@@ -324,9 +356,14 @@ class CompoundShape(Shape):
         Shape.__init__(self)
         self.shapes = shapes
 
+    def set_matched(self,m):
+        self.search_matched = m
+        for shape in self.shapes:
+            shape.set_matched(m)
+
     def draw(self, cr, highlight=False):
         for shape in self.shapes:
-            shape.draw(cr, highlight=highlight)
+            shape.draw(cr, highlight=(highlight))
 
 
 class Url(object):
@@ -365,7 +402,7 @@ class Element(CompoundShape):
 
 class Node(Element):
 
-    def __init__(self, x, y, w, h, shapes, url):
+    def __init__(self, x, y, w, h, shapes, url, txt=""):
         Element.__init__(self, shapes)
 
         self.x = x
@@ -377,6 +414,7 @@ class Node(Element):
         self.y2 = y + 0.5*h
 
         self.url = url
+        self.txt = txt
 
     def is_inside(self, x, y):
         return self.x1 <= x and x <= self.x2 and self.y1 <= y and y <= self.y2
@@ -403,11 +441,12 @@ def square_distance(x1, y1, x2, y2):
 
 class Edge(Element):
 
-    def __init__(self, src, dst, points, shapes):
+    def __init__(self, src, dst, points, shapes, txt=""):
         Element.__init__(self, shapes)
         self.src = src
         self.dst = dst
         self.points = points
+        self.txt = txt
 
     RADIUS = 10
 
@@ -477,7 +516,7 @@ class XDotAttrParser:
         self.parser = parser
         self.buf = buf
         self.pos = 0
-        
+
         self.pen = Pen()
         self.shapes = []
 
@@ -568,7 +607,7 @@ class XDotAttrParser:
             b = b*s
             a = 1.0
             return r, g, b, a
-                
+
         sys.stderr.write("unknown color '%s'\n" % c)
         return None
 
@@ -640,7 +679,7 @@ class XDotAttrParser:
                 break
 
         return self.shapes
-    
+
     def transform(self, x, y):
         return self.parser.transform(x, y)
 
@@ -707,7 +746,7 @@ class ParseError(Exception):
 
     def __str__(self):
         return ':'.join([str(part) for part in (self.filename, self.line, self.col, self.msg) if part != None])
-        
+
 
 class Scanner:
     """Stateless scanner."""
@@ -846,9 +885,9 @@ class Parser:
     def match(self, type):
         if self.lookahead.type != type:
             raise ParseError(
-                msg = 'unexpected token %r' % self.lookahead.text, 
-                filename = self.lexer.filename, 
-                line = self.lookahead.line, 
+                msg = 'unexpected token %r' % self.lookahead.text,
+                filename = self.lexer.filename,
+                line = self.lookahead.line,
                 col = self.lookahead.col)
 
     def skip(self, type):
@@ -951,7 +990,7 @@ class DotLexer(Lexer):
             text = text.replace('\\\r\n', '')
             text = text.replace('\\\r', '')
             text = text.replace('\\\n', '')
-            
+
             # quotes
             text = text.replace('\\"', '"')
 
@@ -1093,7 +1132,7 @@ class XDotParser(DotParser):
     def __init__(self, xdotcode):
         lexer = DotLexer(buf = xdotcode)
         DotParser.__init__(self, lexer)
-        
+
         self.nodes = []
         self.edges = []
         self.shapes = []
@@ -1122,7 +1161,7 @@ class XDotParser(DotParser):
             self.height = max(ymax - ymin, 1)
 
             self.top_graph = False
-        
+
         for attr in ("_draw_", "_ldraw_", "_hdraw_", "_tdraw_", "_hldraw_", "_tldraw_"):
             if attr in attrs:
                 parser = XDotAttrParser(self, attrs[attr])
@@ -1142,8 +1181,12 @@ class XDotParser(DotParser):
             if attr in attrs:
                 parser = XDotAttrParser(self, attrs[attr])
                 shapes.extend(parser.parse())
-        url = attrs.get('URL', None)
-        node = Node(x, y, w, h, shapes, url)
+        # url = attrs.get('URL', None)
+        url = attrs.get('CFA', None)
+        # BORDAIGORL: additional field to store label
+        txt = attrs.get('label', id)
+        node = Node(x, y, w, h, shapes, url,txt)
+        #node.txt = txt
         self.node_by_name[id] = node
         if shapes:
             self.nodes.append(node)
@@ -1153,7 +1196,7 @@ class XDotParser(DotParser):
             pos = attrs['pos']
         except KeyError:
             return
-        
+
         points = self.parse_edge_pos(pos)
         shapes = []
         for attr in ("_draw_", "_ldraw_", "_hdraw_", "_tdraw_", "_hldraw_", "_tldraw_"):
@@ -1163,7 +1206,8 @@ class XDotParser(DotParser):
         if shapes:
             src = self.node_by_name[src_id]
             dst = self.node_by_name[dst_id]
-            self.edges.append(Edge(src, dst, points, shapes))
+            txt = attrs.get('label', "")
+            self.edges.append(Edge(src, dst, points, shapes, txt))
 
     def parse(self):
         DotParser.parse(self)
@@ -1432,7 +1476,7 @@ class DotWidget(gtk.DrawingArea):
         self.connect('key-press-event', self.on_key_press_event)
         self.last_mtime = None
 
-        gobject.timeout_add(1000, self.update)
+        gobject.timeout_add(5000, self.update)
 
         self.x, self.y = 0.0, 0.0
         self.zoom_ratio = 1.0
@@ -1441,6 +1485,8 @@ class DotWidget(gtk.DrawingArea):
         self.drag_action = NullAction(self)
         self.presstime = None
         self.highlight = None
+
+        self.osd = None
 
     def set_filter(self, filter):
         self.filter = filter
@@ -1505,13 +1551,18 @@ class DotWidget(gtk.DrawingArea):
                 fp = file(self.openfilename, 'rt')
                 self.set_dotcode(fp.read(), self.openfilename)
                 fp.close()
-            except IOError:
-                pass
+            except IOError, ex:
+                dlg = gtk.MessageDialog(type=gtk.MESSAGE_ERROR,
+                                        message_format=str(ex),
+                                        buttons=gtk.BUTTONS_OK)
+                dlg.set_title('Dot Viewer')
+                dlg.run()
+                dlg.destroy()
 
     def update(self):
         if self.openfilename is not None:
             current_mtime = os.stat(self.openfilename).st_mtime
-            if current_mtime != self.last_mtime:
+            if current_mtime != self.last_mtime and not os.path.exists(self.openfilename + '.lock'):
                 self.last_mtime = current_mtime
                 self.reload()
         return True
@@ -1536,6 +1587,19 @@ class DotWidget(gtk.DrawingArea):
         cr.translate(-self.x, -self.y)
 
         self.graph.draw(cr, highlight_items=self.highlight)
+
+        if self.osd is not None:
+            cr.set_source_rgb(0.1, 0.1, 0.1)
+            cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL,
+                cairo.FONT_WEIGHT_NORMAL)
+            cr.set_font_size(max(cr.device_to_user_distance(13,13)))
+
+            # print cr.device_to_user(0.5*self.allocation.width,0.5*self.allocation.height)
+            xosd,yosd = cr.device_to_user(0.5*self.allocation.width,0.5*self.allocation.height)
+            _, _, osdw, _, _, _ = (cr.text_extents(self.osd))
+            cr.move_to(xosd-(.5*osdw),yosd)
+            cr.show_text(self.osd)
+
         cr.restore()
 
         self.drag_action.draw(cr)
@@ -1655,6 +1719,35 @@ class DotWidget(gtk.DrawingArea):
             return True
         return False
 
+    def reset_highlight(self):
+        for n in self.graph.nodes:
+            n.set_matched(n.HL_NONE)
+        for n in self.graph.edges:
+            n.set_matched(n.HL_NONE)
+        self.queue_draw()
+
+    def highligh_matches(self, query):
+        if len(query) <= 0: return false
+        if query[0]=='"':
+            query = string.strip(query, "\"")
+            matches = lambda s: (s.find(query)>=0)
+        else:
+            q = re.compile(query)
+            matches = lambda s: (q.search(s)!=None)
+        for n in self.graph.nodes:
+            if n.txt!=None and matches(n.txt):
+                n.set_matched(n.HL_MATCH)
+            elif n.url!=None and matches(n.url):
+                n.set_matched(n.HL_MATCH)
+            else:
+                n.set_matched(n.HL_NOMATCH)
+        for n in self.graph.edges:
+            if n.txt!=None and matches(n.txt):
+                n.set_matched(n.HL_MATCH)
+            else:
+                n.set_matched(n.HL_NOMATCH)
+        self.queue_draw()
+
     def get_drag_action(self, event):
         state = event.state
         if event.button in (1, 2): # left or middle button
@@ -1690,31 +1783,40 @@ class DotWidget(gtk.DrawingArea):
                 and math.hypot(deltax, deltay) < click_fuzz)
 
     def on_area_button_release(self, area, event):
+        global matched
         self.drag_action.on_button_release(event)
         self.drag_action = NullAction(self)
         if event.button == 1 and self.is_click(event):
+            # BORDAIGORL: ONCLICK event
             x, y = int(event.x), int(event.y)
-            url = self.get_url(x, y)
-            if url is not None:
-                self.emit('clicked', unicode(url.url), event)
-            else:
-                jump = self.get_jump(x, y)
-                if jump is not None:
-                    self.animate_to(jump.x, jump.y)
+            #url = self.get_url(x, y)
+            #if url is not None:
+            #    self.emit('clicked', unicode(url.url), event)
+            #else:
+            url = self.get_url(x,y)
+            if url!=None:
+                txt = unicode(url.url).replace("\\n","\n")
+                self.side_info.set_text(txt)
+
+            jump = self.get_jump(x, y)
+            if jump is not None:
+                self.animate_to(jump.x, jump.y)
 
             return True
-        if event.button == 3:
-            url = self.get_url(int(event.x), int(event.y))
-            if url==None:
-                return True
-            txt = unicode(url.url).replace("\\n","\n")
-            dialog = gtk.MessageDialog(
-                parent = None, 
-                buttons = gtk.BUTTONS_OK,
-                message_format= txt)
-            dialog.connect('response', lambda dialog, response: dialog.destroy())
-            dialog.run()
-            return True
+        #if event.button == 3:
+            # BORDAIGORL: Custom event for ACS
+            #url = self.get_url(int(event.x), int(event.y))
+            #if url==None:
+            #    return True
+            #txt = unicode(url.url).replace("\\n","\n")
+            #self.side_info.set_text(txt)
+            #dialog = gtk.MessageDialog(
+            #    parent = None,
+            #    buttons = gtk.BUTTONS_OK,
+            #    message_format= txt)
+            #dialog.connect('response', lambda dialog, response: dialog.destroy())
+            #dialog.run()
+            #return True
         if event.button == 1 or event.button == 2:
             return True
         return False
@@ -1777,7 +1879,7 @@ class DotWindow(gtk.Window):
     </ui>
     '''
 
-    base_title = 'Dot Viewer'
+    base_title = 'ACS Viewer'
 
     def __init__(self):
         gtk.Window.__init__(self)
@@ -1822,13 +1924,75 @@ class DotWindow(gtk.Window):
 
         # Create a Toolbar
         toolbar = uimanager.get_widget('/ToolBar')
+        item = gtk.ToolItem()
+        #self.highligh_matches("Pid")
+        self.search = gtk.Entry()
+        self.search.set_icon_from_stock(1,gtk.STOCK_CLEAR)
+        self.search.connect("icon-press",self.reset_search)
+        self.search.connect("changed", self.do_search)
+        item.add(self.search)
+        toolbar.insert(gtk.SeparatorToolItem(),-1)
+        hide_side=gtk.ToggleToolButton(gtk.STOCK_PROPERTIES)
+        hide_side.set_label("Side Pane")
+        #hide_side.set_active(True)
+        toolbar.insert(hide_side,-1)
+        toolbar.insert(gtk.SeparatorToolItem(),-1)
+        toolbar.insert(item,-1)
+
         vbox.pack_start(toolbar, False)
 
-        vbox.pack_start(self.widget)
+        #hbox = gtk.HBox(homogeneous=False, spacing=1)
+        #hbox.pack_start(self.widget, expand=True)
+        hbox = gtk.HPaned()
+
+        sw = gtk.ScrolledWindow()
+        hide_side.connect("toggled", self.toggle_info, hbox, sw,window)
+        sw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+        info = gtk.TextView()
+        info.set_editable(False)
+        self.widget.side_info = info.get_buffer()
+        sw.add(info)
+        #sw.set_size_request(200, -1)
+        sw.show_all()
+
+        self.widget.set_size_request(300, -1)
+
+        hbox.pack1(self.widget, True, False)
+        #hbox.pack2(sw, True, True)
+        #hbox.pack_start(sw)
+        #info.set_wrap_mode(gtk.WRAP_WORD)
+
+        w,_h = window.get_size()
+        #hbox.set_position(.7*w)
+
+        #self.info = info
+        info.set_left_margin(10)
+        gtk.Widget.modify_base(info, gtk.STATE_NORMAL, gtk.gdk.color_parse("light yellow"))
+
+        vbox.pack_start(hbox)
 
         self.set_focus(self.widget)
 
         self.show_all()
+
+    # BORDAIGORL: search controls
+    def do_search(self,en):
+        st =self.search.get_text()
+        if st=="":
+            self.widget.reset_highlight()
+        else:
+            self.widget.highligh_matches(st)
+
+    def reset_search(self,en,p,e):
+        self.search.set_text("")
+
+    def toggle_info(self, x,p,c,w):
+        if x.get_active():
+            p.pack2(c, True, True)
+            w,_h = w.get_size()
+            p.set_position(int(.7*w))
+        else:
+            p.remove(c)
 
     def set_filter(self, filter):
         self.widget.set_filter(filter)
@@ -1842,7 +2006,7 @@ class DotWindow(gtk.Window):
         if self.widget.set_xdotcode(xdotcode):
             self.update_title(filename)
             self.widget.zoom_to_fit()
-        
+
     def update_title(self, filename=None):
         if filename is None:
             self.set_title(self.base_title)
@@ -1852,6 +2016,7 @@ class DotWindow(gtk.Window):
     def open_file(self, filename):
         try:
             fp = file(filename, 'rt')
+            os.chdir(os.path.dirname(filename) or '.')
             self.set_dotcode(fp.read(), filename)
             fp.close()
         except IOError, ex:
@@ -1862,6 +2027,7 @@ class DotWindow(gtk.Window):
             dlg.run()
             dlg.destroy()
 
+
     def on_open(self, action):
         chooser = gtk.FileChooserDialog(title="Open dot File",
                                         action=gtk.FILE_CHOOSER_ACTION_OPEN,
@@ -1869,6 +2035,7 @@ class DotWindow(gtk.Window):
                                                  gtk.RESPONSE_CANCEL,
                                                  gtk.STOCK_OPEN,
                                                  gtk.RESPONSE_OK))
+        chooser.set_current_folder(os.getcwd())
         chooser.set_default_response(gtk.RESPONSE_OK)
         filter = gtk.FileFilter()
         filter.set_name("Graphviz dot files")
@@ -1914,7 +2081,8 @@ def main():
     win.set_filter(options.filter)
     if len(args) == 0:
         if not sys.stdin.isatty():
-            win.set_dotcode(sys.stdin.read())
+            #win.set_dotcode(sys.stdin.read())
+            pass # this is to avoid hanging when launched from .desktop files
     else:
         if args[0] == '-':
             win.set_dotcode(sys.stdin.read())
@@ -1925,24 +2093,24 @@ def main():
 
 # Apache-Style Software License for ColorBrewer software and ColorBrewer Color
 # Schemes, Version 1.1
-# 
+#
 # Copyright (c) 2002 Cynthia Brewer, Mark Harrower, and The Pennsylvania State
 # University. All rights reserved.
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
-# 
+#
 #    1. Redistributions as source code must retain the above copyright notice,
-#    this list of conditions and the following disclaimer.  
+#    this list of conditions and the following disclaimer.
 #
 #    2. The end-user documentation included with the redistribution, if any,
 #    must include the following acknowledgment:
-# 
+#
 #       This product includes color specifications and designs developed by
 #       Cynthia Brewer (http://colorbrewer.org/).
-# 
+#
 #    Alternately, this acknowledgment may appear in the software itself, if and
-#    wherever such third-party acknowledgments normally appear.  
+#    wherever such third-party acknowledgments normally appear.
 #
 #    3. The name "ColorBrewer" must not be used to endorse or promote products
 #    derived from this software without prior written permission. For written
@@ -1950,8 +2118,8 @@ def main():
 #
 #    4. Products derived from this software may not be called "ColorBrewer",
 #    nor may "ColorBrewer" appear in their name, without prior written
-#    permission of Cynthia Brewer. 
-# 
+#    permission of Cynthia Brewer.
+#
 # THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESSED OR IMPLIED WARRANTIES,
 # INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
 # FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL CYNTHIA
@@ -1961,7 +2129,7 @@ def main():
 # LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
 # ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 brewer_colors = {
     'accent3': [(127, 201, 127), (190, 174, 212), (253, 192, 134)],
     'accent4': [(127, 201, 127), (190, 174, 212), (253, 192, 134), (255, 255, 153)],
@@ -2232,4 +2400,3 @@ brewer_colors = {
 
 if __name__ == '__main__':
     main()
-
