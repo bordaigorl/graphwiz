@@ -2105,6 +2105,7 @@ class DotWindow(gtk.Window):
         filter = gtk.FileFilter()
         filter.set_name("Graphviz dot files")
         filter.add_pattern("*.dot")
+        filter.add_pattern("*.gv")
         chooser.add_filter(filter)
         filter = gtk.FileFilter()
         filter.set_name("All files")
