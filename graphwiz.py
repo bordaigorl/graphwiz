@@ -1830,6 +1830,8 @@ class DotWidget(gtk.DrawingArea):
             else:
                 self.side_info.set_text("")
 
+            if event.state & gtk.gdk.CONTROL_MASK:
+                return
             jump = self.get_jump(x, y)
             if jump is not None:
                 self.animate_to(jump.x, jump.y)
