@@ -1667,13 +1667,14 @@ class DotWidget(gtk.DrawingArea):
         rect = self.get_allocation()
         width = abs(x1 - x2)
         height = abs(y1 - y2)
-        self.zoom_ratio = min(
-            float(rect.width)/float(width),
-            float(rect.height)/float(height)
-        )
-        self.zoom_to_fit_on_resize = False
-        self.x = (x1 + x2) / 2
-        self.y = (y1 + y2) / 2
+        if width > 0 and height > 0:
+            self.zoom_ratio = min(
+                float(rect.width)/float(width),
+                float(rect.height)/float(height)
+            )
+            self.zoom_to_fit_on_resize = False
+            self.x = (x1 + x2) / 2
+            self.y = (y1 + y2) / 2
         self.queue_draw()
 
     def zoom_to_fit(self):
